@@ -1,0 +1,170 @@
+// Area Penelitian
+var filter = ee.Filter.inList('ADM1_NAME',['Dki Jakarta']);
+var aoi = admin.filter(filter);
+
+// import data
+var AOD = ee.ImageCollection("MODIS/061/MCD19A2_GRANULES");
+
+// Define dates
+var iniDate = ee.Date.fromYMD(2019,1,1);
+var endDate = ee.Date.fromYMD(2019,12,31);
+
+// bands
+var modisBands = ['Optical_Depth_055'];
+
+// helper function to extract the QA bits
+function getQABits(image, start, end, newName) {
+    // Compute the bits we need to extract.
+    var pattern = 0;
+    for (var i = start; i <= end; i++) {
+       pattern += Math.pow(2, i);
+    }
+    // Return a single band image of the extracted QA bits, giving the band
+    // a new name.
+    return image.select([0], [newName])
+                  .bitwiseAnd(pattern)
+                  .rightShift(start);
+}
+
+// A function to mask out cloudy pixels.
+function maskQuality(image) {
+  // Select the QA band.
+  var QA = image.select('AOD_QA');
+  // Get the internal_cloud_algorithm_flag bit.
+  var internalQuality = getQABits(QA,8, 11, 'internal_quality_flag');
+  // Return an image masking out cloudy areas.
+  return image.updateMask(internalQuality.eq(0));
+}
+
+// create cloud free composite
+var AODmaskQ = AOD.filter(ee.Filter.or(
+  ee.Filter.date('2019-01-01', '2019-12-31'),
+  ee.Filter.date('2019-01-01', '2019-12-31')
+  ))
+                             .map(maskQuality)
+                             .select(modisBands)
+                             .filterBounds(aoi);
+
+// create composite with quality assurance (without clouds) 
+var AODwithoutmask = AOD.filter(ee.Filter.or(
+  ee.Filter.date('2019-01-01', '2019-12-31'),
+  ee.Filter.date('2019-01-01', '2019-12-31')
+  ))
+                             .select(modisBands)
+                             .filterBounds(aoi);
+
+// vis parameters
+var viz = {
+  min: 0,
+  max: 350,
+  bands:['Optical_Depth_055'],
+  palette: ['black', 'blue', 'purple', 'cyan', 'green', 'yellow', 'red']
+};
+var composite1 = AODmaskQ.mean().clip(aoi)
+var composite2 = AODwithoutmask.mean().clip(aoi)
+
+// Tambahkan komposit bebas awan ke peta
+Map.addLayer(composite1, viz, 'Quality mask');
+// Setel pusat peta ke Jakarta
+Map.centerObject(aoi, 9); // Koordinat dan zoom untuk Jakarta
+
+// Tambahkan komposit tanpa masker ke peta
+Map.addLayer(composite2, viz, 'Without mask');
+// Map.setCenter(106.8456, -6.2088, 9); // Koordinat dan zoom untuk Jakarta
+
+// Hitung rata-rata AOD di area yang ditentukan
+var AOD_mean = AODmaskQ.map(function(img) {
+   return img.reduceRegions({
+       collection: aoi, 
+       reducer: ee.Reducer.mean(),
+       scale: 1000,
+   }).map(function(f) {
+       return f.set('date', img.date());
+   });
+}).flatten();
+ 
+ Export.image.toDrive({
+   image:AODmaskQ.mean(), 
+   description: 'AOD',
+   scale: 1000,
+   region:aoi 
+      });
+ 
+ Export.table.toDrive({ 
+   collection:AOD_mean.filter(ee.Filter.notNull(["mean"])),
+   folder: "Google EE results",
+   description: 'RMSP mask', 
+   selectors:([          
+     "date",          
+     "mean"
+     ]),
+   });
+   
+   // Fungsi untuk menambahkan legenda ke peta
+function addLegend(min, max, palette, title) {
+  var legend = ui.Panel({
+    style: {
+      position: 'bottom-left',
+      padding: '8px 15px'
+    }
+  });
+
+  // Judul legenda
+  var legendTitle = ui.Label({
+    value: title,
+    style: {
+      fontWeight: 'bold',
+      fontSize: '16px',
+      margin: '0 0 4px 0',
+      padding: '0'
+    }
+  });
+
+  legend.add(legendTitle);
+
+  var legendLabels = ui.Panel({
+    widgets: [
+      ui.Label(min, {margin: '4px 8px'}),
+      ui.Label((min + max) / 2, {margin: '4px 8px', textAlign: 'center', stretch: 'horizontal'}),
+      ui.Label(max, {margin: '4px 8px'})
+    ],
+    layout: ui.Panel.Layout.flow('horizontal')
+  });
+
+  legend.add(legendLabels);
+
+  var paletteBar = ui.Thumbnail({
+    image: ee.Image.pixelLonLat().select(0),
+    params: {
+      bbox: [0, 0, 1, 0.1],
+      dimensions: '150x10',
+      format: 'png',
+      min: 0,
+      max: 1,
+      palette: palette,
+    },
+    style: {stretch: 'horizontal', margin: '0px 8px', maxHeight: '24px'}
+  });
+
+  legend.add(paletteBar);
+  Map.add(legend);
+}
+
+// Inisialisasi peta dan tambahkan data
+Map.addLayer(composite1, viz, 'Quality mask');
+// Map.setCenter(106.8456, -6.2088, 9);
+
+// Tambahkan legenda
+addLegend(viz.min, viz.max, viz.palette, 'AOD Index');
+   
+   // Misalnya, ekspor gambar AOD sebagai GeoTIFF
+Export.image.toDrive({
+  image: composite1,
+  description: 'AOD_Jakarta2019',
+  scale: 1000,
+  region: aoi,
+  fileFormat: 'GeoTIFF'
+});
+
+
+
